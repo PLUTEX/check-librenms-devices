@@ -1,0 +1,135 @@
+#! /usr/bin/env bash
+# 2017, Moritz Kaspar Rudert (mru) <mru@plutex.de>.
+# All rights reserved.
+
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this list of
+#   conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice, this list
+#   of conditions and the following disclaimer in the documentation and/or other materials
+#   provided with the distribution.
+#
+# * The names of its contributors may not be used to endorse or promote products derived
+#   from this software without specific prior written permission.
+#
+# * Feel free to send Club Mate to support the work.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
+# OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS
+# AND CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# Set secure path
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Exit codes
+declare -i STATE_OK=0
+declare -i STATE_WARNING=1
+declare -i STATE_CRITICAL=2
+declare -i STATE_UNKNOWN=3
+
+# Instanciate some variables
+DEVICES=0
+DEVICES_DOWN=0
+DEVICES_DISABLED=0
+
+# Default error message
+ERR_MSG=''
+ERR_MSG_OK='all devices are up'
+ERR_MSG_SUFFIX='is down'
+
+# Declare variables
+API_KEY=''
+API_URL=''
+DOMAIN_SUFFIX=''
+
+# Parse arguments
+for ARG in "$@"; do
+  if [ "$ARG" = '-h' -o "$ARG" = '--help' ]; then
+    cat <<EOF
+LibreNMS devices check
+usage: $(basename $0)
+
+--api-key=<token>
+  LibreNMS API token
+
+--api-url=<url>
+  LibreNMS Base URL (without the first slash)
+
+--domain-suffix=<suffix>
+  Domain suffix
+EOF
+    exit 0
+  elif [[ "$ARG" =~ ^--api-key= ]]; then
+    API_KEY="${ARG#--api-key=}"
+  elif [[ "$ARG" =~ ^--api-url= ]]; then
+    API_URL="${ARG#--api-url=}"
+  elif [[ "$ARG" =~ ^--domain-suffix= ]]; then
+    DOMAIN_SUFFIX="${ARG#--domain-suffix=}"
+  fi
+done
+
+if [ -z "$API_KEY" ]; then
+  echo 'UNKNOWN: --api-key= not given!' >&2
+  exit $STATE_UNKNOWN
+elif [ -z "$API_URL" ]; then
+  echo 'UNKNOWN: --api-url= not given!' >&2
+  exit $STATE_UNKNOWN
+elif [ -z "$DOMAIN_SUFFIX" ]; then
+  echo 'UNKNOWN: --domain-suffix= not given!' >&2
+  exit $STATE_UNKNOWN
+fi
+
+LIBRENMS_DEVICES="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/devices")"
+
+while read LIBRENMS_DEVICE; do
+  LIBRENMS_DEVICE_HOSTNAME="$(jq '.hostname' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
+  LIBRENMS_DEVICE_STATUS="$(jq '.status' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
+  LIBRENMS_DEVICE_IGNORED="$(jq '.ignore' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
+  LIBRENMS_DEVICE_DISABLED="$(jq '.disabled' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
+  LIBRENMS_DEVICE_LASTPING="$(jq '.last_ping' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
+
+  # Increase device total count
+  DEVICES=$(($DEVICES+1))
+
+  # Continue on ignored or disabled devices
+  if [ "$LIBRENMS_DEVICE_IGNORED" -eq 1 -o "$LIBRENMS_DEVICE_DISABLED" -eq 1 ]; then
+    continue
+  fi
+
+  # If device is down
+  if [ "$LIBRENMS_DEVICE_STATUS" -eq 0 ]; then
+    # Longer than 20min
+    if [ $(date +"%s") -gt $((${LIBRENMS_DEVICE_LAST_PING}+1200)) ]; then
+      # Increase device down count
+      DEVICES_DOWN=$(($DEVICES_DOWN+1))
+
+      # Set error to critical
+      ERR_CODE=$STATE_CRITICAL
+      ERR_MSG="${ERR_MSG}${LIBRENMS_DEVICE_HOSTNAME/${DOMAIN_SUFFIX}/}, "
+    fi
+  fi
+done < <(jq -c '.devices[]' <<<"$LIBRENMS_DEVICES")
+
+case $ERR_CODE in
+  $STATE_OK)
+    echo "OK: ${ERR_MSG_OK} | devices=${DEVICES}, down=${DEVICES_DOWN}"
+  ;;
+  $STATE_UNKNOWN)
+    echo "UNKNOWN: ${ERR_MSG} | devices=${DEVICES}, down=${DEVICES_DOWN}"
+  ;;
+  $STATE_CRITICAL)
+    echo "CRITICAL: $(sed -e 's/, $//g' <<<"$ERR_MSG") ${ERR_MSG_SUFFIX} | devices=${DEVICES}, down=${DEVICES_DOWN}" | sed 's/, $//'
+  ;;
+esac
+
+# Exit
+exit $ERR_CODE
