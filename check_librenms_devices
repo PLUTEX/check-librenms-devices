@@ -32,14 +32,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # Exit codes
 declare -i STATE_OK=0
-declare -i STATE_WARNING=1
 declare -i STATE_CRITICAL=2
 declare -i STATE_UNKNOWN=3
 
 # Instanciate some variables
 DEVICES=0
 DEVICES_DOWN=0
-DEVICES_DISABLED=0
 
 # Default error message
 ERR_MSG=''
@@ -53,10 +51,10 @@ DOMAIN_SUFFIX=''
 
 # Parse arguments
 for ARG in "$@"; do
-  if [ "$ARG" = '-h' -o "$ARG" = '--help' ]; then
+  if [ "$ARG" = '-h' ] || [ "$ARG" = '--help' ]; then
     cat <<EOF
 LibreNMS devices check
-usage: $(basename $0)
+usage: $(basename "$0")
 
 --api-key=<token>
   LibreNMS API token
@@ -90,27 +88,26 @@ fi
 
 LIBRENMS_DEVICES="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/devices")"
 
-while read LIBRENMS_DEVICE; do
+while read -r LIBRENMS_DEVICE; do
   LIBRENMS_DEVICE_HOSTNAME="$(jq '.hostname' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
   LIBRENMS_DEVICE_STATUS="$(jq '.status' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
   LIBRENMS_DEVICE_IGNORED="$(jq '.ignore' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
   LIBRENMS_DEVICE_DISABLED="$(jq '.disabled' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
-  LIBRENMS_DEVICE_LASTPING="$(jq '.last_ping' <<<"$LIBRENMS_DEVICE" | sed -e 's/"//g')"
 
   # Increase device total count
-  DEVICES=$(($DEVICES+1))
+  DEVICES=$(( DEVICES + 1 ))
 
   # Continue on ignored or disabled devices
-  if [ "$LIBRENMS_DEVICE_IGNORED" -eq 1 -o "$LIBRENMS_DEVICE_DISABLED" -eq 1 ]; then
+  if [ "$LIBRENMS_DEVICE_IGNORED" -eq 1 ] || [ "$LIBRENMS_DEVICE_DISABLED" -eq 1 ]; then
     continue
   fi
 
   # If device is down
   if [ "$LIBRENMS_DEVICE_STATUS" -eq 0 ]; then
     # Longer than 20min
-    if [ $(date +"%s") -gt $((${LIBRENMS_DEVICE_LAST_PING}+1200)) ]; then
+    if [ "$(date +"%s")" -gt $(( LIBRENMS_DEVICE_LAST_PING + 1200 )) ]; then
       # Increase device down count
-      DEVICES_DOWN=$(($DEVICES_DOWN+1))
+      DEVICES_DOWN=$(( DEVICES_DOWN + 1))
 
       # Set error to critical
       ERR_CODE=$STATE_CRITICAL
